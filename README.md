@@ -2,7 +2,7 @@
 
 ![GitHub last commit](https://img.shields.io/github/last-commit/Venuluck/secure_cicd_pipeline)
 ![GitHub repo size](https://img.shields.io/github/repo-size/Venuluck/secure_cicd_pipeline)
-![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/Venuluck/secure_cicd_pipeline/secure-cicd.yml?branch=main)
+![GitHub Workflow Status](https://github.com/Venuluck/secure_cicd_pipeline/actions/workflows/devsecops-pipeline.yml/badge.svg)](https://github.com/Venuluck/secure_cicd_pipeline/actions/workflows/devsecops-pipeline.yml)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
 ![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?logo=kubernetes&logoColor=white)
 ![GitHub Actions](https://img.shields.io/badge/GitHub-Actions-2088FF?logo=githubactions&logoColor=white)

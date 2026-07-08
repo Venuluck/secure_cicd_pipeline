@@ -274,6 +274,6 @@ https://github.com/Venuluck
 
 LinkedIn:
 
-(Add your LinkedIn profile)
+https://www.linkedin.com/in/venu-p-24311b201/ 
 
 ---

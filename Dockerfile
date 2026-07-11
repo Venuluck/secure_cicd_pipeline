@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN addgroup --system appgroup && adduser --system appuser --ingroup appgroup
+RUN addgroup --gid 1000 appgroup \
+    && adduser --uid 1000 --gid 1000 --disabled-password --gecos "" appuser
 
 COPY app/requirements.txt .
 

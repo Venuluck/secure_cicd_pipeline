@@ -12,10 +12,10 @@ permissions:
 
 env:
   IMAGE_NAME: secure-app
-  IMAGE_TAG: latest
+  IMAGE_TAG: ci
 
 jobs:
-  security-pipeline:
+  build-test-security:
     name: Build, Test, and Security Scan
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -36,27 +36,34 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: app/requirements.txt
+          cache-dependency-path: |
+            app/requirements.txt
+            requirements-dev.txt
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r app/requirements.txt
+          pip install -r requirements-dev.txt
 
-      - name: Validate Flask application
+      - name: Run automated tests with coverage
         run: |
-          python -m py_compile app/app.py
-          python -c "from app.app import app; print(app.url_map)"
+          python -m pytest \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            -v
+
+      - name: Run SonarQube Cloud scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       - name: Build Docker image
         run: |
           docker build \
             --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
             .
-
-      - name: Display Docker image
-        run: |
-          docker image ls "${IMAGE_NAME}:${IMAGE_TAG}"
 
       - name: Install Trivy
         run: |
@@ -73,9 +80,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y trivy
 
-          trivy --version
-
-      - name: Generate Trivy container report
+      - name: Generate Trivy reports
         run: |
           mkdir -p reports/trivy
 
@@ -87,12 +92,6 @@ jobs:
             --output reports/trivy/image-scan.txt \
             "${IMAGE_NAME}:${IMAGE_TAG}"
 
-          cat reports/trivy/image-scan.txt
-
-      - name: Generate Trivy IaC report
-        run: |
-          mkdir -p reports/trivy
-
           trivy config \
             --format table \
             --severity HIGH,CRITICAL \
@@ -100,6 +99,7 @@ jobs:
             --output reports/trivy/iac-scan.txt \
             .
 
+          cat reports/trivy/image-scan.txt
           cat reports/trivy/iac-scan.txt
 
       - name: Upload Trivy reports
@@ -111,7 +111,21 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      - name: Enforce Trivy container security gate
+      - name: Save Docker image
+        run: |
+          docker save \
+            --output secure-app.tar \
+            "${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: secure-app-image
+          path: secure-app.tar
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Enforce container security gate
         run: |
           trivy image \
             --format table \
@@ -120,10 +134,173 @@ jobs:
             --exit-code 1 \
             "${IMAGE_NAME}:${IMAGE_TAG}"
 
-      - name: Enforce Trivy IaC security gate
+      - name: Enforce IaC security gate
         run: |
           trivy config \
             --format table \
             --severity HIGH,CRITICAL \
             --exit-code 1 \
             .
+
+  kubernetes-validation:
+    name: Kubernetes Kind Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build-test-security
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: secure-app-image
+          path: .
+
+      - name: Load Docker image
+        run: |
+          docker load --input secure-app.tar
+          docker image ls "${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind \
+            https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
+
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+          kind version
+
+      - name: Create Kind cluster
+        run: |
+          kind create cluster \
+            --name secure-cicd \
+            --wait 120s
+
+          kubectl cluster-info \
+            --context kind-secure-cicd
+
+          kubectl get nodes
+
+      - name: Load image into Kind
+        run: |
+          kind load docker-image \
+            "${IMAGE_NAME}:${IMAGE_TAG}" \
+            --name secure-cicd
+
+      - name: Update Kubernetes image tag
+        run: |
+          sed -i \
+            "s|image: secure-app:latest|image: ${IMAGE_NAME}:${IMAGE_TAG}|g" \
+            k8s/deployment.yaml
+
+      - name: Validate Kubernetes manifests
+        run: |
+          kubectl apply \
+            --dry-run=client \
+            -f k8s/
+
+      - name: Deploy application to Kind
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+          kubectl apply -f k8s/network-policy.yaml
+
+      - name: Wait for deployment
+        run: |
+          kubectl rollout status \
+            deployment/secure-app \
+            --namespace secure-app \
+            --timeout=180s
+
+          kubectl get all \
+            --namespace secure-app
+
+      - name: Test application endpoint
+        run: |
+          kubectl port-forward \
+            service/secure-app-service \
+            8080:80 \
+            --namespace secure-app \
+            > port-forward.log 2>&1 &
+
+          PORT_FORWARD_PID=$!
+          trap "kill $PORT_FORWARD_PID" EXIT
+
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8080/ \
+              | tee response.json; then
+              break
+            fi
+
+            if [ "$attempt" -eq 30 ]; then
+              echo "Application did not become reachable."
+              cat port-forward.log
+              kubectl get pods --namespace secure-app
+              kubectl describe pods --namespace secure-app
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          python - <<'PY'
+          import json
+
+          with open("response.json", encoding="utf-8") as file:
+              response = json.load(file)
+
+          assert response["status"] == "running"
+          assert response["message"] == (
+              "Secure CI/CD pipeline deployed successfully"
+          )
+
+          print("Kubernetes application endpoint validation passed.")
+          PY
+
+      - name: Collect Kubernetes evidence
+        if: always()
+        run: |
+          mkdir -p reports/kubernetes
+
+          kubectl get all \
+            --namespace secure-app \
+            --output wide \
+            > reports/kubernetes/resources.txt || true
+
+          kubectl describe deployment secure-app \
+            --namespace secure-app \
+            > reports/kubernetes/deployment.txt || true
+
+          kubectl get networkpolicy \
+            --namespace secure-app \
+            --output yaml \
+            > reports/kubernetes/network-policy.yaml || true
+
+          kubectl logs \
+            deployment/secure-app \
+            --namespace secure-app \
+            > reports/kubernetes/application.log || true
+
+          cp response.json \
+            reports/kubernetes/response.json 2>/dev/null || true
+
+          cp port-forward.log \
+            reports/kubernetes/port-forward.log 2>/dev/null || true
+
+      - name: Upload Kubernetes evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubernetes-validation-evidence
+          path: reports/kubernetes/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Delete Kind cluster
+        if: always()
+        run: |
+          kind delete cluster --name secure-cicd

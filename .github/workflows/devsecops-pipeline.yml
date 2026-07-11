@@ -2,9 +2,11 @@ name: DevSecOps Pipeline
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -13,6 +15,7 @@ permissions:
 env:
   IMAGE_NAME: secure-app
   IMAGE_TAG: ci
+  KIND_CLUSTER_NAME: secure-cicd
 
 jobs:
   build-test-security:
@@ -43,8 +46,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r app/requirements.txt
-          pip install -r requirements-dev.txt
+          python -m pip install -r app/requirements.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Run automated tests with coverage
         run: |
@@ -53,6 +56,11 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             -v
+
+      - name: Verify coverage report
+        run: |
+          test -f coverage.xml
+          ls -lh coverage.xml
 
       - name: Run SonarQube Cloud scan
         uses: SonarSource/sonarqube-scan-action@v6
@@ -64,6 +72,10 @@ jobs:
           docker build \
             --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
             .
+
+      - name: Display Docker image
+        run: |
+          docker image ls "${IMAGE_NAME}:${IMAGE_TAG}"
 
       - name: Install Trivy
         run: |
@@ -80,7 +92,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y trivy
 
-      - name: Generate Trivy reports
+          trivy --version
+
+      - name: Generate Trivy container report
         run: |
           mkdir -p reports/trivy
 
@@ -92,6 +106,12 @@ jobs:
             --output reports/trivy/image-scan.txt \
             "${IMAGE_NAME}:${IMAGE_TAG}"
 
+          cat reports/trivy/image-scan.txt
+
+      - name: Generate Trivy IaC report
+        run: |
+          mkdir -p reports/trivy
+
           trivy config \
             --format table \
             --severity HIGH,CRITICAL \
@@ -99,7 +119,6 @@ jobs:
             --output reports/trivy/iac-scan.txt \
             .
 
-          cat reports/trivy/image-scan.txt
           cat reports/trivy/iac-scan.txt
 
       - name: Upload Trivy reports
@@ -125,7 +144,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-      - name: Enforce container security gate
+      - name: Enforce Trivy container security gate
         run: |
           trivy image \
             --format table \
@@ -134,7 +153,7 @@ jobs:
             --exit-code 1 \
             "${IMAGE_NAME}:${IMAGE_TAG}"
 
-      - name: Enforce IaC security gate
+      - name: Enforce Trivy IaC security gate
         run: |
           trivy config \
             --format table \
@@ -165,22 +184,22 @@ jobs:
 
       - name: Install Kind
         run: |
-          curl -Lo ./kind \
-            https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
+          curl --fail --location --output kind \
+            https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
 
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
+          chmod +x kind
+          sudo mv kind /usr/local/bin/kind
 
           kind version
 
       - name: Create Kind cluster
         run: |
           kind create cluster \
-            --name secure-cicd \
+            --name "${KIND_CLUSTER_NAME}" \
             --wait 120s
 
           kubectl cluster-info \
-            --context kind-secure-cicd
+            --context "kind-${KIND_CLUSTER_NAME}"
 
           kubectl get nodes
 
@@ -188,7 +207,7 @@ jobs:
         run: |
           kind load docker-image \
             "${IMAGE_NAME}:${IMAGE_TAG}" \
-            --name secure-cicd
+            --name "${KIND_CLUSTER_NAME}"
 
       - name: Update Kubernetes image tag
         run: |
@@ -217,10 +236,14 @@ jobs:
             --timeout=180s
 
           kubectl get all \
-            --namespace secure-app
+            --namespace secure-app \
+            --output wide
 
       - name: Test application endpoint
+        shell: bash
         run: |
+          set -euo pipefail
+
           kubectl port-forward \
             service/secure-app-service \
             8080:80 \
@@ -228,24 +251,61 @@ jobs:
             > port-forward.log 2>&1 &
 
           PORT_FORWARD_PID=$!
-          trap "kill $PORT_FORWARD_PID" EXIT
+
+          cleanup() {
+            kill "$PORT_FORWARD_PID" 2>/dev/null || true
+          }
+
+          trap cleanup EXIT
+
+          SUCCESS=false
 
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8080/ \
-              | tee response.json; then
-              break
-            fi
+            echo "Endpoint test attempt: $attempt"
 
-            if [ "$attempt" -eq 30 ]; then
-              echo "Application did not become reachable."
-              cat port-forward.log
-              kubectl get pods --namespace secure-app
-              kubectl describe pods --namespace secure-app
-              exit 1
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              --connect-timeout 3 \
+              --max-time 5 \
+              --output response.json \
+              http://127.0.0.1:8080/; then
+
+              if [ -s response.json ]; then
+                SUCCESS=true
+                break
+              fi
             fi
 
             sleep 2
           done
+
+          if [ "$SUCCESS" != "true" ]; then
+            echo "Application endpoint did not become reachable."
+
+            echo "Port-forward log:"
+            cat port-forward.log || true
+
+            echo "Kubernetes resources:"
+            kubectl get all \
+              --namespace secure-app \
+              --output wide || true
+
+            echo "Pod details:"
+            kubectl describe pods \
+              --namespace secure-app || true
+
+            echo "Application logs:"
+            kubectl logs \
+              deployment/secure-app \
+              --namespace secure-app || true
+
+            exit 1
+          fi
+
+          echo "Application response:"
+          cat response.json
 
           python - <<'PY'
           import json
@@ -303,4 +363,5 @@ jobs:
       - name: Delete Kind cluster
         if: always()
         run: |
-          kind delete cluster --name secure-cicd
+          kind delete cluster \
+            --name "${KIND_CLUSTER_NAME}"

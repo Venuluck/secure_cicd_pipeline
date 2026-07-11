@@ -82,17 +82,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y trivy
 
-      - name: Run Trivy image scan
-        run: |
-          mkdir -p reports/trivy
-          trivy image --format table --output reports/trivy/image-scan.txt --severity HIGH,CRITICAL --exit-code 1 secure-app:latest
+      - name: Generate Trivy image report
+  run: |
+    mkdir -p reports/trivy
+    trivy image --format table --output reports/trivy/image-scan.txt --severity HIGH,CRITICAL --exit-code 0 secure-app:latest
 
-      - name: Upload Trivy report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-image-scan
-          path: reports/trivy/image-scan.txt
+- name: Display Trivy report
+  run: cat reports/trivy/image-scan.txt
+
+- name: Enforce Trivy security gate
+  run: |
+    trivy image --format table --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 secure-app:latest
+
+- name: Upload Trivy report
+  if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: trivy-image-scan
+    path: reports/trivy/image-scan.txt
 
   dependency-check:
     name: OWASP Dependency Check

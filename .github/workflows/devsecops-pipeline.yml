@@ -2,9 +2,11 @@ name: DevSecOps Pipeline
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -21,27 +23,21 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      # ----------------------------------------------------------
-      # 1. Checkout source code
-      # ----------------------------------------------------------
+      # 1. Checkout repository
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      # ----------------------------------------------------------
       # 2. Secrets scanning
-      # ----------------------------------------------------------
       - name: Scan repository for secrets
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ----------------------------------------------------------
-      # 3. Python setup and application validation
-      # ----------------------------------------------------------
+      # 3. Python setup
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -57,9 +53,7 @@ jobs:
           python -m py_compile app/app.py
           python -c "from app.app import app; print(app.url_map)"
 
-      # ----------------------------------------------------------
       # 4. Build Docker image
-      # ----------------------------------------------------------
       - name: Build Docker image
         run: |
           docker build \
@@ -70,9 +64,7 @@ jobs:
         run: |
           docker image ls "${IMAGE_NAME}:${IMAGE_TAG}"
 
-      # ----------------------------------------------------------
       # 5. Install Trivy
-      # ----------------------------------------------------------
       - name: Install Trivy
         run: |
           sudo apt-get update
@@ -90,9 +82,7 @@ jobs:
 
           trivy --version
 
-      # ----------------------------------------------------------
-      # 6. Generate Trivy container report
-      # ----------------------------------------------------------
+      # 6. Trivy container scan
       - name: Generate Trivy container report
         run: |
           mkdir -p reports/trivy
@@ -107,11 +97,11 @@ jobs:
 
           cat reports/trivy/image-scan.txt
 
-      # ----------------------------------------------------------
-      # 7. Generate Trivy Infrastructure-as-Code report
-      # ----------------------------------------------------------
+      # 7. Trivy IaC scan
       - name: Generate Trivy IaC report
         run: |
+          mkdir -p reports/trivy
+
           trivy config \
             --format table \
             --severity HIGH,CRITICAL \
@@ -121,9 +111,7 @@ jobs:
 
           cat reports/trivy/iac-scan.txt
 
-      # ----------------------------------------------------------
       # 8. Upload Trivy reports
-      # ----------------------------------------------------------
       - name: Upload Trivy reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -133,26 +121,42 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # ----------------------------------------------------------
-      # 9. OWASP Dependency-Check
-      # ----------------------------------------------------------
-      - name: Create Dependency-Check report directory
-        if: always()
+      # 9. Prepare Dependency-Check
+      - name: Create Dependency-Check directories
         run: |
           mkdir -p reports/dependency-check
+          mkdir -p dependency-check-data
 
+      - name: Cache Dependency-Check database
+        uses: actions/cache@v4
+        with:
+          path: dependency-check-data
+          key: dependency-check-data-${{ runner.os }}-v1
+          restore-keys: |
+            dependency-check-data-${{ runner.os }}-
+
+      # 10. OWASP Dependency-Check
       - name: Run OWASP Dependency-Check
-        if: always()
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
+          if [ -z "$NVD_API_KEY" ]; then
+            echo "NVD_API_KEY repository secret is missing."
+            exit 1
+          fi
+
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/src" \
             -v "$GITHUB_WORKSPACE/reports/dependency-check:/report" \
+            -v "$GITHUB_WORKSPACE/dependency-check-data:/usr/share/dependency-check/data" \
             owasp/dependency-check:latest \
             --project "secure-cicd-pipeline" \
-            --scan /src \
+            --scan /src/app \
             --format HTML \
             --out /report \
-            --failOnCVSS 9
+            --nvdApiKey "$NVD_API_KEY" \
+            --nvdApiDelay 3500 \
+            --nvdMaxRetryCount 20
 
       - name: Upload Dependency-Check report
         if: always()
@@ -163,9 +167,7 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # ----------------------------------------------------------
-      # 10. Enforce security gates
-      # ----------------------------------------------------------
+      # 11. Enforce container security gate
       - name: Enforce Trivy container security gate
         run: |
           trivy image \
@@ -175,6 +177,7 @@ jobs:
             --exit-code 1 \
             "${IMAGE_NAME}:${IMAGE_TAG}"
 
+      # 12. Enforce IaC security gate
       - name: Enforce Trivy IaC security gate
         run: |
           trivy config \

@@ -1,13 +1,15 @@
 # 🔐 Secure DevSecOps CI/CD Pipeline
 
-![GitHub last commit](https://img.shields.io/github/last-commit/Venuluck/secure_cicd_pipeline)
-![GitHub repo size](https://img.shields.io/github/repo-size/Venuluck/secure_cicd_pipeline)
-![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/Venuluck/secure_cicd_pipeline/devsecops-pipeline.yml?branch=main&label=build)
-![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
-![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?logo=kubernetes&logoColor=white)
-![GitHub Actions](https://img.shields.io/badge/GitHub-Actions-2088FF?logo=githubactions&logoColor=white)
-![SonarQube](https://img.shields.io/badge/SonarQube-SAST-blue)
-![Trivy](https://img.shields.io/badge/Trivy-Container%20Security-green)
+[![DevSecOps Pipeline](https://github.com/Venuluck/secure_cicd_pipeline/actions/workflows/devsecops-pipeline.yml/badge.svg?branch=main)](https://github.com/Venuluck/secure_cicd_pipeline/actions/workflows/devsecops-pipeline.yml)
+
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Venuluck_secure_cicd_pipeline&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Venuluck_secure_cicd_pipeline)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=Venuluck_secure_cicd_pipeline&metric=coverage)](https://sonarcloud.io/summary/new_code?id=Venuluck_secure_cicd_pipeline)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=Venuluck_secure_cicd_pipeline&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=Venuluck_secure_cicd_pipeline)
+
+![Docker](https://img.shields.io/badge/Docker-Containerization-2496ED?logo=docker&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-Kind%20Validation-326CE5?logo=kubernetes&logoColor=white)
+![Trivy](https://img.shields.io/badge/Trivy-Container%20%26%20IaC%20Scanning-1904DA)
+![Gitleaks](https://img.shields.io/badge/Gitleaks-Secrets%20Scanning-brightgreen)
 
 ---
 ## 📖 Overview
@@ -27,33 +29,33 @@ The primary goal of this project is to demonstrate modern DevSecOps practices in
 
 ---
 
-# 🏗 Architecture
+## Architecture
 
-```text
-                Developer
-                    │
-                    ▼
-              GitHub Repository
-                    │
-                    ▼
-            GitHub Actions Pipeline
-                    │
-     ┌──────────────┼──────────────┐
-     │              │              │
-     ▼              ▼              ▼
- SonarQube       Trivy       Dependency Check
-   (SAST)     (Container)          (SCA)
-     │              │              │
-     └──────────────┼──────────────┘
-                    │
-                    ▼
-            Docker Image Build
-                    │
-                    ▼
-           Kubernetes Deployment
+```mermaid
+flowchart TD
+    A[Developer Push or Pull Request] --> B[GitHub Actions]
+
+    B --> C[Gitleaks Secrets Scan]
+    C --> D[Python Tests and Coverage]
+    D --> E[SonarQube Cloud SAST]
+    E --> F[Docker Image Build]
+
+    F --> G[Trivy Container Scan]
+    F --> H[Trivy IaC Scan]
+
+    G --> I{Security Gates}
+    H --> I
+
+    I -->|Pass| J[Create Kind Cluster]
+    I -->|Fail| K[Stop Pipeline]
+
+    J --> L[Load Docker Image into Kind]
+    L --> M[Apply Kubernetes Manifests]
+    M --> N[Wait for Rollout]
+    N --> O[Test Flask Endpoint]
+
+    O --> P[Upload Security and Kubernetes Evidence]
 ```
-
----
 
 # 🚀 Tech Stack
 
